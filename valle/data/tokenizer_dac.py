@@ -24,7 +24,7 @@ class DACAudioTokenizer:
 
     def process_data(self, wav: typing.Union[torch.Tensor, str, Path, np.ndarray]):
 
-        signal = AudioSignal(wav)
+        signal = AudioSignal(wav, self.sample_rate)
         signal = signal.resample(self.sample_rate)
         signal = signal.to(self.device)
         return self.model.preprocess(signal.audio_data, signal.sample_rate)
@@ -32,6 +32,7 @@ class DACAudioTokenizer:
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         # input:  x: [B, 1, T]
         # output: token index tensor: [B, N, T'], N is n_codebook
+        assert x.ndim == 3 and x.shape[1] == 1, f"Input shape must be [B, 1, T], got {x.shape}"
         _, codes, *_ = self.model.encode(x)
         return codes
 
@@ -127,6 +128,8 @@ class DACAudioTokenExtractor(FeatureExtractor):
         
         samples = [self.tokenizer.process_data(wav)  for wav in samples]
         samples = torch.stack(samples, 0) # convert samples from list to tensor
+        if samples.ndim == 4:
+            samples = samples.squeeze(1) 
         
         # Extract discrete codes from dac
         with torch.no_grad():

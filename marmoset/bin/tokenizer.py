@@ -35,8 +35,8 @@ from tqdm.auto import tqdm
 from valle.data import (
     AudioTokenConfig,
     AudioTokenExtractor,
-    TextTokenizer,
-    tokenize_text,
+    DACAudioTokenConfig,
+    DACAudioTokenExtractor
 )
 from valle.data.fbank import get_fbank_extractor
 from valle.utils import SymbolTable
@@ -59,13 +59,13 @@ def get_args():
     parser.add_argument(
         "--src-dir",
         type=Path,
-        default=Path("data/manifests"),
+        default=Path("/cpfs02/user/housiyuan/dataset/monkey/valle_data/manifests"),
         help="Path to the manifest files",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data/tokenized"),
+        default=Path("/cpfs02/user/housiyuan/dataset/monkey/valle_data/tokenized"),
         help="Path to the tokenized files",
     )
     parser.add_argument(
@@ -127,8 +127,6 @@ def main():
     )
 
     text_tokenizer = None
-    if args.text_extractor:
-        text_tokenizer = TextTokenizer(backend=args.text_extractor)
 
     audio_extractor = None
     if args.audio_extractor:
@@ -138,6 +136,7 @@ def main():
             audio_extractor = get_fbank_extractor()
         else:
             assert args.audio_extractor == "dac"
+            audio_extractor = DACAudioTokenExtractor(DACAudioTokenConfig())
 
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -163,20 +162,21 @@ def main():
 
             # AudioTokenizer
             if args.audio_extractor:
-                if args.audio_extractor == "Encodec":
-                    storage_path = (
-                        f"{args.output_dir}/{args.prefix}_encodec_{partition}"
-                    )
-                else:
-                    storage_path = (
-                        f"{args.output_dir}/{args.prefix}_fbank_{partition}"
-                    )
+
+                storage_path = (f"{args.output_dir}/{args.prefix}_{args.audio_extractor}_{partition}")
 
                 with torch.no_grad():
-                    if (
-                        torch.cuda.is_available()
-                        and args.audio_extractor == "Encodec"
-                    ):
+                    if (torch.cuda.is_available() and args.audio_extractor == "Encodec"):
+                        cut_set = cut_set.compute_and_store_features_batch(
+                            extractor=audio_extractor,
+                            storage_path=storage_path,
+                            num_workers=num_jobs,
+                            batch_duration=args.batch_duration,
+                            collate=False,
+                            overwrite=True,
+                            storage_type=NumpyHdf5Writer,
+                        )
+                    elif (torch.cuda.is_available() and args.audio_extractor == "dac"):
                         cut_set = cut_set.compute_and_store_features_batch(
                             extractor=audio_extractor,
                             storage_path=storage_path,
@@ -195,45 +195,8 @@ def main():
                             storage_type=NumpyHdf5Writer,
                         )
 
-            # TextTokenizer
-            if args.text_extractor:
-                if (
-                    args.prefix == "baker"
-                    and args.text_extractor == "labeled_pinyin"
-                ):
-                    for c in tqdm(cut_set):
-                        phonemes = c.supervisions[0].custom["tokens"]["text"]
-                        unique_symbols.update(phonemes)
-                else:
-                    for c in tqdm(cut_set):
-                        if args.prefix == "ljspeech":
-                            text = c.supervisions[0].custom["normalized_text"]
-                            text = text.replace("”", '"').replace("“", '"')
-                            phonemes = tokenize_text(text_tokenizer, text=text)
-                        elif args.prefix == "aishell":
-                            phonemes = tokenize_text(
-                                text_tokenizer, text=c.supervisions[0].text
-                            )
-                            c.supervisions[0].custom = {}
-                        else:
-                            assert args.prefix == "libritts"
-                            phonemes = tokenize_text(
-                                text_tokenizer, text=c.supervisions[0].text
-                            )
-                        c.supervisions[0].custom["tokens"] = {"text": phonemes}
-                        unique_symbols.update(phonemes)
-
             cuts_filename = f"{prefix}cuts_{partition}.{args.suffix}"
             cut_set.to_file(f"{args.output_dir}/{cuts_filename}")
-
-    if args.text_extractor:
-        unique_phonemes = SymbolTable()
-        for s in sorted(list(unique_symbols)):
-            unique_phonemes.add(s)
-        logging.info(f"{len(unique_symbols)} unique phonemes: {unique_symbols}")
-
-        unique_phonemes_file = f"{args.output_dir}/unique_text_tokens.k2symbols"
-        unique_phonemes.to_file(unique_phonemes_file)
 
 
 if __name__ == "__main__":

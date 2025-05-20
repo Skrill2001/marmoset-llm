@@ -147,8 +147,8 @@ class DACAudioTokenExtractor(FeatureExtractor):
 
 if __name__ == "__main__":
 
-    audio_path = "egs/marmoset/prompts/test_48k.wav"
-    output_path = "egs/marmoset/prompts/output_48k.wav"
+    audio_path = "marmoset/prompts/test_48k.wav"
+    output_path = "marmoset/prompts/output_48k.wav"
     tokenizer = DACAudioTokenizer(model_path="ckpt/dac/weights.pth")
 
     audio = tokenizer.process_data(audio_path)

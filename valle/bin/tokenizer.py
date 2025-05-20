@@ -69,27 +69,21 @@ def get_args():
         help="Path to the tokenized files",
     )
     parser.add_argument(
-        "--text-extractor",
-        type=str,
-        default="espeak",
-        help="espeak or pypinyin or pypinyin_initials_finals",
-    )
-    parser.add_argument(
         "--audio-extractor",
         type=str,
-        default="Encodec",
-        help="Encodec or Fbank",
+        default="dac",
+        help="Encodec or Fbank or dac",
     )
     parser.add_argument(
         "--dataset-parts",
         type=str,
-        default="dev-clean test-clean",
+        default="train val test",
         help="Space separated dataset parts",
     )
     parser.add_argument(
         "--prefix",
         type=str,
-        default="libritts",
+        default="marmoset",
         help="prefix of the manifest file",
     )
     parser.add_argument(
@@ -113,15 +107,11 @@ def main():
     args = get_args()
 
     dataset_parts = args.dataset_parts.replace("--dataset-parts", "").strip()
-    if dataset_parts == "all":  # LibriTTS
+    if dataset_parts == "all":
         dataset_parts = [
-            "dev-clean",
-            "dev-other",
-            "test-clean",
-            "test-other",
-            "train-clean-100",
-            "train-clean-360",
-            "train-other-500",
+            "train",
+            "val",
+            "test"
         ]
     else:
         dataset_parts = dataset_parts.replace("-p", "").strip().split(" ")
@@ -144,9 +134,11 @@ def main():
     if args.audio_extractor:
         if args.audio_extractor == "Encodec":
             audio_extractor = AudioTokenExtractor(AudioTokenConfig())
-        else:
-            assert args.audio_extractor == "Fbank"
+        elif args.audio_extractor == "Fbank":
             audio_extractor = get_fbank_extractor()
+        else:
+            assert args.audio_extractor == "dac"
+
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     unique_symbols = set()
@@ -179,16 +171,6 @@ def main():
                     storage_path = (
                         f"{args.output_dir}/{args.prefix}_fbank_{partition}"
                     )
-
-                if args.prefix.lower() in ["ljspeech", "aishell", "baker"]:
-                    cut_set = cut_set.resample(24000)
-                    # https://github.com/lifeiteng/vall-e/issues/90
-                    # if args.prefix == "aishell":
-                    #     # NOTE: the loudness of aishell audio files is around -33
-                    #     # The best way is datamodule --on-the-fly-feats --enable-audio-aug
-                    #     cut_set = cut_set.normalize_loudness(
-                    #         target=-20.0, affix_id=True
-                    #     )
 
                 with torch.no_grad():
                     if (

@@ -1,57 +1,15 @@
-import re
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional, Pattern, Union
+from typing import Any, Dict, Optional, Union
+import typing
+from pathlib import Path
+import os
 
 import numpy as np
 import torch
-import torchaudio
-from encodec import EncodecModel
-from encodec.utils import convert_audio
 from lhotse.features import FeatureExtractor
 from lhotse.utils import Seconds, compute_num_frames
-from phonemizer.backend import EspeakBackend
-from phonemizer.backend.espeak.language_switch import LanguageSwitch
-from phonemizer.backend.espeak.words_mismatch import WordMismatch
-from phonemizer.punctuation import Punctuation
-from phonemizer.separator import Separator
-from ....dac import *
+from dac import DAC
 from audiotools import AudioSignal
-
-try:
-    from pypinyin import Style, pinyin
-    from pypinyin.style._utils import get_finals, get_initials
-except Exception:
-    pass
-
-
-def remove_encodec_weight_norm(model):
-    from encodec.modules import SConv1d
-    from encodec.modules.seanet import SConvTranspose1d, SEANetResnetBlock
-    from torch.nn.utils import remove_weight_norm
-
-    encoder = model.encoder.model
-    for key in encoder._modules:
-        if isinstance(encoder._modules[key], SEANetResnetBlock):
-            remove_weight_norm(encoder._modules[key].shortcut.conv.conv)
-            block_modules = encoder._modules[key].block._modules
-            for skey in block_modules:
-                if isinstance(block_modules[skey], SConv1d):
-                    remove_weight_norm(block_modules[skey].conv.conv)
-        elif isinstance(encoder._modules[key], SConv1d):
-            remove_weight_norm(encoder._modules[key].conv.conv)
-
-    decoder = model.decoder.model
-    for key in decoder._modules:
-        if isinstance(decoder._modules[key], SEANetResnetBlock):
-            remove_weight_norm(decoder._modules[key].shortcut.conv.conv)
-            block_modules = decoder._modules[key].block._modules
-            for skey in block_modules:
-                if isinstance(block_modules[skey], SConv1d):
-                    remove_weight_norm(block_modules[skey].conv.conv)
-        elif isinstance(decoder._modules[key], SConvTranspose1d):
-            remove_weight_norm(decoder._modules[key].convtr.convtr)
-        elif isinstance(decoder._modules[key], SConv1d):
-            remove_weight_norm(decoder._modules[key].conv.conv)
 
 
 class DACAudioTokenizer:
@@ -64,31 +22,33 @@ class DACAudioTokenizer:
         self.sample_rate = self.model.sample_rate
         self.channels = 1
 
-    def encode(self, wav: torch.Tensor) -> torch.Tensor:
-        # input:    wav: [B, 1, T]
+    def process_data(self, wav: typing.Union[torch.Tensor, str, Path, np.ndarray]):
+
+        signal = AudioSignal(wav)
+        signal = signal.resample(self.sample_rate)
+        signal = signal.to(self.device)
+        return self.model.preprocess(signal.audio_data, signal.sample_rate)
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        # input:  x: [B, 1, T]
         # output: token index tensor: [B, N, T'], N is n_codebook
-        _, codes, *_ = self.model.encode(wav)
+        _, codes, *_ = self.model.encode(x)
         return codes
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
 
         assert codes.ndim == 3 and codes.shape[1] == self.model.n_codebooks
         z = self.model.quantizer.from_codes(codes)[0]
-        recon = self.decode(z)
+        recon = self.model.decode(z)
         return recon
 
 
 def tokenize_audio(tokenizer: DACAudioTokenizer, audio_path: str, sample_rate: int = 48000):
 
-    # Load and pre-process the audio waveform
-    signal = AudioSignal(audio_path)
-    signal = signal.resample(sample_rate)
-    signal.to(tokenizer.device)
-    wav = tokenizer.model.preprocess(signal.audio_data, signal.sample_rate)
-
     # Extract discrete codes from dac
+    audio = tokenizer.process_data(audio_path)
     with torch.no_grad():
-        encoded_frames = tokenizer.encode(wav)
+        encoded_frames = tokenizer.encode(audio)
     return encoded_frames
 
 
@@ -116,23 +76,15 @@ class DACAudioTokenExtractor(FeatureExtractor):
     def extract(
         self, samples: Union[np.ndarray, torch.Tensor], sampling_rate: int
     ) -> np.ndarray:
+        
         if not isinstance(samples, torch.Tensor):
             samples = torch.from_numpy(samples)
-        if sampling_rate != self.tokenizer.sample_rate:
-            samples = convert_audio(
-                samples,
-                sampling_rate,
-                self.tokenizer.sample_rate,
-                self.tokenizer.channels,
-            )
-        if len(samples.shape) == 2:
-            samples = samples.unsqueeze(0)
-        else:
-            raise ValueError()
+        
+        with torch.no_grad():
+            # batch_size = 1
+            samples = self.tokenizer.process_data(samples)
+            codes = self.tokenizer.encode(samples.detach())
 
-        device = self.tokenizer.device
-        encoded_frames = self.tokenizer.encode(samples.detach().to(device))
-        codes = encoded_frames[0][0]  # [B, n_q, T]
         if True:
             duration = round(samples.shape[-1] / sampling_rate, ndigits=12)
             expected_num_frames = compute_num_frames(
@@ -169,23 +121,17 @@ class DACAudioTokenExtractor(FeatureExtractor):
 
         if not isinstance(samples, torch.Tensor):
             samples = torch.from_numpy(samples)
+
         if len(samples.shape) != 3:
             raise ValueError()
-        if sampling_rate != self.tokenizer.sample_rate:
-            samples = [
-                convert_audio(
-                    wav,
-                    sampling_rate,
-                    self.tokenizer.sample_rate,
-                    self.tokenizer.channels,
-                )
-                for wav in samples
-            ]
-            samples = torch.stack(samples, 0) # convert samples from list to tensor
-        # Extract discrete codes from EnCodec
+        
+        samples = [self.tokenizer.process_data(wav)  for wav in samples]
+        samples = torch.stack(samples, 0) # convert samples from list to tensor
+        
+        # Extract discrete codes from dac
         with torch.no_grad():
             encoded_frames = self.tokenizer.encode(samples.detach().to(device))
-        encoded_frames = encoded_frames[0][0]  # [B, n_q, T]
+
         batch_codes = []
         for b, length in enumerate(lengths):
             codes = encoded_frames[b]
@@ -200,15 +146,19 @@ class DACAudioTokenExtractor(FeatureExtractor):
 
 
 if __name__ == "__main__":
-    model = EncodecModel.encodec_model_24khz()
-    model.set_target_bandwidth(6.0)
 
-    samples = torch.from_numpy(np.random.random([4, 1, 1600])).type(
-        torch.float32
-    )
-    codes_raw = model.encode(samples)
+    audio_path = "egs/marmoset/prompts/test_48k.wav"
+    output_path = "egs/marmoset/prompts/output_48k.wav"
+    tokenizer = DACAudioTokenizer(model_path="ckpt/dac/weights.pth")
 
-    remove_encodec_weight_norm(model)
-    codes_norm = model.encode(samples)
+    audio = tokenizer.process_data(audio_path)
+    print("audio shape: ", audio.shape)
+    
+    codes = tokenizer.encode(audio)
+    print("codex shape: ", codes.shape)
+    
+    recon = tokenizer.decode(codes)
+    print("recon shape: ", recon.shape)
 
-    assert torch.allclose(codes_raw[0][0], codes_norm[0][0])
+    y = AudioSignal(recon.cpu().detach().numpy(), 48000)
+    y.write(output_path)

@@ -17,11 +17,11 @@ from lhotse import (
 from lhotse.recipes.utils import manifests_exist, read_manifests_if_cached
 from lhotse.utils import Pathlike, resumable_download, safe_extract
 
-DATA_SPLIT = (
+DATA_SPLIT = [
     "train",
     "val",
     "test",
-)
+]
 
 def prepare_marmoset(
     corpus_dir: Pathlike,
@@ -95,3 +95,12 @@ def prepare_marmoset(
         print(f"Loaded {len(recordings)} recordings and {len(supervisions)} supervisions for '{part}'")
 
     return manifests
+
+
+if __name__ == "__main__":
+
+    prepare_marmoset(
+        corpus_dir = "/cpfs02/user/housiyuan/dataset/monkey/codec_data",  
+        dataset_parts = "all",
+        output_dir = "/cpfs02/user/housiyuan/dataset/monkey/valle_data/manifests"
+    )

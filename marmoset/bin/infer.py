@@ -36,9 +36,9 @@ import torchaudio
 from icefall.utils import AttributeDict, str2bool
 
 from valle.data import (
-    AudioTokenizer,
+    DACAudioTokenizer,
     TextTokenizer,
-    tokenize_audio,
+    tokenize_audio_dac,
     tokenize_text,
 )
 from valle.data.collation import get_text_token_collater
@@ -51,7 +51,7 @@ def get_args():
     parser.add_argument(
         "--text-prompts",
         type=str,
-        default="",
+        default="a",
         help="Text prompts which are separated by |.",
     )
 
@@ -65,7 +65,7 @@ def get_args():
     parser.add_argument(
         "--text",
         type=str,
-        default="To get up and running quickly just follow the steps below.",
+        default="a",
         help="Text to be synthesized.",
     )
 
@@ -81,15 +81,22 @@ def get_args():
     parser.add_argument(
         "--text-extractor",
         type=str,
-        default="espeak",
+        default="pypinyin",
         help="espeak or pypinyin or pypinyin_initials_finals",
     )
 
     parser.add_argument(
         "--checkpoint",
         type=str,
-        default="exp/vallf_nano_full/checkpoint-100000.pt",
+        default="exp/valle/best-valid-loss.pt",
         help="Path to the saved checkpoint.",
+    )
+
+    parser.add_argument(
+        "--tokenizer-path",
+        type=str,
+        default="../dac/ckpt/weights.pth",
+        help="Path to the tokenizer checkpoint.",
     )
 
     parser.add_argument(
@@ -155,7 +162,7 @@ def main():
     model, text_tokens = load_model(args.checkpoint, device)
     text_collater = get_text_token_collater(text_tokens)
 
-    audio_tokenizer = AudioTokenizer()
+    audio_tokenizer = DACAudioTokenizer(model_path=args.tokenizer_path)
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -164,14 +171,14 @@ def main():
     audio_prompts = []
     if args.audio_prompts:
         for n, audio_file in enumerate(args.audio_prompts.split("|")):
-            encoded_frames = tokenize_audio(audio_tokenizer, audio_file)
+            encoded_frames = tokenize_audio_dac(audio_tokenizer, audio_file)
             if False:
                 samples = audio_tokenizer.decode(encoded_frames)
                 torchaudio.save(
                     f"{args.output_dir}/p{n}.wav", samples[0], 24000
                 )
 
-            audio_prompts.append(encoded_frames[0][0])
+            audio_prompts.append(encoded_frames)
 
         assert len(args.text_prompts.split("|")) == len(audio_prompts)
         audio_prompts = torch.concat(audio_prompts, dim=-1).transpose(2, 1)
@@ -188,20 +195,20 @@ def main():
                 text_tokens, text_tokens_lens = text_collater(
                     [
                         tokenize_text(
-                            text_tokenizer, text=f"{prompt_text} {text}".strip()
+                            text_tokenizer, text=f"{text}".strip()
                         )
                     ]
                 )
                 _, enroll_x_lens = text_collater(
                     [
                         tokenize_text(
-                            text_tokenizer, text=f"{prompt_text}".strip()
+                            text_tokenizer, text=f"{text}".strip()
                         )
                     ]
                 )
 
-                audio_prompts = tokenize_audio(audio_tokenizer, prompt_audio)
-                audio_prompts = audio_prompts[0][0].transpose(2, 1).to(device)
+                audio_prompts = tokenize_audio_dac(audio_tokenizer, prompt_audio)
+                audio_prompts = audio_prompts.transpose(2, 1).to(device)
 
                 # synthesis
                 encoded_frames = model.inference(
@@ -217,7 +224,7 @@ def main():
                     [(encoded_frames.transpose(2, 1), None)]
                 )
                 # store
-                torchaudio.save(audio_path, samples[0].cpu(), 24000)
+                torchaudio.save(audio_path, samples[0].cpu(), 48000)
         return
 
     for n, text in enumerate(args.text.split("|")):
@@ -225,7 +232,7 @@ def main():
         text_tokens, text_tokens_lens = text_collater(
             [
                 tokenize_text(
-                    text_tokenizer, text=f"{text_prompts} {text}".strip()
+                    text_tokenizer, text=f"{text}".strip()
                 )
             ]
         )
@@ -244,7 +251,7 @@ def main():
                 _, enroll_x_lens = text_collater(
                     [
                         tokenize_text(
-                            text_tokenizer, text=f"{text_prompts}".strip()
+                            text_tokenizer, text=f"{text}".strip()
                         )
                     ]
                 )
@@ -258,13 +265,9 @@ def main():
             )
 
         if audio_prompts != []:
-            samples = audio_tokenizer.decode(
-                [(encoded_frames.transpose(2, 1), None)]
-            )
+            samples = audio_tokenizer.decode(encoded_frames.transpose(2, 1))
             # store
-            torchaudio.save(
-                f"{args.output_dir}/{n}.wav", samples[0].cpu(), 24000
-            )
+            torchaudio.save(f"{args.output_dir}/{n}.wav", samples[0].cpu(), 48000)
         else:  # Transformer
             pass
 

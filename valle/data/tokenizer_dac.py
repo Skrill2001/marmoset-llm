@@ -55,7 +55,7 @@ class DACAudioTokenizer:
         return recon
 
 
-def tokenize_audio(tokenizer: DACAudioTokenizer, audio_path: str, sample_rate: int = 48000):
+def tokenize_audio_dac(tokenizer: DACAudioTokenizer, audio_path: str, sample_rate: int = 48000):
 
     # Extract discrete codes from dac
     audio = tokenizer.process_data(audio_path)

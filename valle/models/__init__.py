@@ -82,7 +82,7 @@ def add_model_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--num-quantizers",
         type=int,
-        default=8,
+        default=9,
         help="Number of Audio/Semantic quantization layers.",
     )
 

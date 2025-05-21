@@ -36,7 +36,9 @@ from valle.data import (
     AudioTokenConfig,
     AudioTokenExtractor,
     DACAudioTokenConfig,
-    DACAudioTokenExtractor
+    DACAudioTokenExtractor,
+    TextTokenizer,
+    tokenize_text
 )
 from valle.data.fbank import get_fbank_extractor
 from valle.utils import SymbolTable
@@ -67,6 +69,12 @@ def get_args():
         type=Path,
         default=Path("/cpfs02/user/housiyuan/dataset/monkey/valle_data/tokenized"),
         help="Path to the tokenized files",
+    )
+    parser.add_argument(
+        "--text-extractor",
+        type=str,
+        default="pypinyin",
+        help="espeak or pypinyin or pypinyin_initials_finals",
     )
     parser.add_argument(
         "--audio-extractor",
@@ -127,6 +135,8 @@ def main():
     )
 
     text_tokenizer = None
+    if args.text_extractor:
+        text_tokenizer = TextTokenizer(backend=args.text_extractor)
 
     audio_extractor = None
     if args.audio_extractor:
@@ -194,9 +204,25 @@ def main():
                             executor=ex,
                             storage_type=NumpyHdf5Writer,
                         )
+            
+            # TextTokenizer
+            if args.text_extractor:
+                for c in tqdm(cut_set):
+                    phonemes = tokenize_text(text_tokenizer, text=c.supervisions[0].text)
+                    c.supervisions[0].custom["tokens"] = {"text": phonemes}
+                    unique_symbols.update(phonemes) 
 
             cuts_filename = f"{prefix}cuts_{partition}.{args.suffix}"
             cut_set.to_file(f"{args.output_dir}/{cuts_filename}")
+
+    if args.text_extractor:
+        unique_phonemes = SymbolTable()
+        for s in sorted(list(unique_symbols)):
+            unique_phonemes.add(s)
+        logging.info(f"{len(unique_symbols)} unique phonemes: {unique_symbols}")
+
+        unique_phonemes_file = f"{args.output_dir}/unique_text_tokens.k2symbols"
+        unique_phonemes.to_file(unique_phonemes_file)
 
 
 if __name__ == "__main__":

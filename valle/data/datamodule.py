@@ -90,7 +90,7 @@ class TtsDataModule:
         group.add_argument(
             "--manifest-dir",
             type=Path,
-            default=Path("data/tokenized"),
+            default=Path("/cpfs02/user/housiyuan/dataset/monkey/valle_data/tokenized"),
             help="Path to directory with train/valid/test cuts.",
         )
         group.add_argument(
@@ -110,7 +110,7 @@ class TtsDataModule:
         group.add_argument(
             "--num-buckets",
             type=int,
-            default=10,
+            default=6,
             help="The number of buckets for the DynamicBucketingSampler"
             "(you might want to increase it for larger datasets).",
         )
@@ -217,22 +217,29 @@ class TtsDataModule:
         group.add_argument(
             "--dataset",
             type=str,
-            default="libritts",
+            default="marmoset",
             help="--input-strategy PromptedPrecomputedFeatures needs dataset name to prepare prompts.",
         )
 
         parser.add_argument(
             "--text-tokens",
             type=str,
-            default="data/tokenized/unique_text_tokens.k2symbols",
+            default="/cpfs02/user/housiyuan/dataset/monkey/valle_data/tokenized/unique_text_tokens.k2symbols",
             help="Path to the unique text tokens file",
         )
 
         parser.add_argument(
             "--sampling-rate",
             type=int,
-            default=24000,
+            default=48000,
             help="""Audio sampling rate.""",
+        )
+
+        group.add_argument(
+            "--prefix",
+            type=str,
+            default="marmoset",
+            help="prefix of the manifest file",
         )
 
     def train_dataloaders(
@@ -319,6 +326,7 @@ class TtsDataModule:
                 feature_transforms=input_transforms,
             )
 
+        # True
         if self.args.bucketing_sampler:
             logging.info("Using DynamicBucketingSampler")
             train_sampler = DynamicBucketingSampler(
@@ -327,7 +335,7 @@ class TtsDataModule:
                 shuffle=self.args.shuffle,
                 buffer_size=self.args.buffer_size,
                 shuffle_buffer_size=self.args.shuffle_buffer_size,
-                quadratic_duration=10,
+                quadratic_duration=None,    # original value is 10
                 num_cuts_for_bins_estimate=10000,
                 drop_last=True,
             )
@@ -343,6 +351,7 @@ class TtsDataModule:
             )
         logging.info("About to create train dataloader")
 
+        # if resume from checkpoint
         if sampler_state_dict is not None:
             logging.info("Loading sampler state dict")
             train_sampler.load_state_dict(sampler_state_dict)
@@ -426,15 +435,15 @@ class TtsDataModule:
     def train_cuts(self) -> CutSet:
         logging.info("About to get train cuts")
         return load_manifest_lazy(
-            self.args.manifest_dir / "cuts_train.jsonl.gz"
+            self.args.manifest_dir / f"{self.args.prefix}_cuts_train.jsonl.gz"
         )
 
     @lru_cache()
-    def dev_cuts(self) -> CutSet:
-        logging.info("About to get dev cuts")
-        return load_manifest_lazy(self.args.manifest_dir / "cuts_dev.jsonl.gz")
+    def val_cuts(self) -> CutSet:
+        logging.info("About to get val cuts")
+        return load_manifest_lazy(self.args.manifest_dir / f"{self.args.prefix}_cuts_val.jsonl.gz")
 
     @lru_cache()
     def test_cuts(self) -> CutSet:
         logging.info("About to get test cuts")
-        return load_manifest_lazy(self.args.manifest_dir / "cuts_test.jsonl.gz")
+        return load_manifest_lazy(self.args.manifest_dir / f"{self.args.prefix}_cuts_test.jsonl.gz")

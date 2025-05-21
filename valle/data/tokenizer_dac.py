@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Union
 import typing
 from pathlib import Path
 import os
+import h5py
 
 import numpy as np
 import torch
@@ -10,6 +11,16 @@ from lhotse.features import FeatureExtractor
 from lhotse.utils import Seconds, compute_num_frames
 from dac import DAC
 from audiotools import AudioSignal
+
+
+def h5_to_dict(h5_path: str) -> dict:
+    data = {}
+    with h5py.File(h5_path, 'r') as f:
+        def _visit(name, obj):
+            if isinstance(obj, h5py.Dataset):
+                data[name] = obj[()]
+        f.visititems(_visit)
+    return data
 
 
 class DACAudioTokenizer:
@@ -70,7 +81,7 @@ class DACAudioTokenExtractor(FeatureExtractor):
     name = "dac"
     config_type = DACAudioTokenConfig
 
-    def __init__(self, config: Optional[Any] = None, model_path: str = "ckpt/dac/weights.pth"):
+    def __init__(self, config: Optional[Any] = None, model_path: str = "dac/ckpt/weights.pth"):
         super(DACAudioTokenExtractor, self).__init__(config)
         self.tokenizer = DACAudioTokenizer(model_path = model_path)
 
@@ -152,7 +163,7 @@ if __name__ == "__main__":
 
     audio_path = "marmoset/prompts/test_48k.wav"
     output_path = "marmoset/prompts/output_48k.wav"
-    tokenizer = DACAudioTokenizer(model_path="ckpt/dac/weights.pth")
+    tokenizer = DACAudioTokenizer(model_path="dac/ckpt/weights.pth")
 
     audio = tokenizer.process_data(audio_path)
     print("audio shape: ", audio.shape)
@@ -165,3 +176,13 @@ if __name__ == "__main__":
 
     y = AudioSignal(recon.cpu().detach().numpy(), 48000)
     y.write(output_path)
+
+    tokenized_data = h5_to_dict("/cpfs02/user/housiyuan/dataset/monkey/valle_data/tokenized/marmoset_dac_test.h5")
+    codes_from_h5 = torch.from_numpy(tokenized_data["2024_05_09_09_38_1-195"]).permute(1, 0).unsqueeze(0).to(tokenizer.device)
+    print("\ncodes_from_h5 shape: ", codes_from_h5.shape)
+
+    recon_from_h5 = tokenizer.decode(codes_from_h5)
+    print("recon_from_h5 shape: ", recon_from_h5.shape)
+
+    y_from_h5 = AudioSignal(recon_from_h5.cpu().detach().numpy(), 48000)
+    y_from_h5.write("marmoset/prompts/recon_from_h5_48k.wav")

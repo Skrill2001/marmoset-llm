@@ -79,7 +79,8 @@ def prepare_marmoset(
                     start=0.0,
                     duration=recording.duration,
                     channel=0,
-                    text="",
+                    text="a",
+                    custom={"orig_text": "a"}
                 )
             )
 

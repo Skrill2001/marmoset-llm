@@ -319,7 +319,7 @@ def get_params() -> AttributeDict:
             "batch_idx_train": 0,
             "log_interval": 100,  # 10: debug 100: train
             "reset_interval": 200,
-            "valid_interval": 2000,
+            "valid_interval": 10000,
             # parameters for TTS
             "env_info": get_env_info(),
         }
@@ -513,14 +513,14 @@ def compute_loss(
         else next(model.parameters()).device
     )
     # at entry, TextTokens is (N, P)
-    # text_tokens shape [1, P]
     text_tokens = batch["text_tokens"].to(device)
     text_tokens_lens = batch["text_tokens_lens"].to(device)
+    print(f"text_tokens: {text_tokens}, {text_tokens.shape}, text_token_lens: {text_tokens_lens}" )
     assert text_tokens.ndim == 2
 
-    # audio_features shape [1, T, 9]
     audio_features = batch["audio_features"].to(device)
     audio_features_lens = batch["audio_features_lens"].to(device)
+    print(f"audio_tokens shape: {audio_features.shape}, audio_token_lens: {audio_features_lens}" )
     assert audio_features.ndim == 3
 
     with torch.set_grad_enabled(is_training):

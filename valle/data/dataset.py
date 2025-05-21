@@ -109,3 +109,55 @@ def validate_for_tts(cuts: CutSet) -> None:
         assert (
             len(cut.supervisions) == 1
         ), "Only the Cuts with single supervision are supported."
+
+
+class MarmosetCallDataset(torch.utils.data.Dataset):
+    """
+    The PyTorch Dataset for the marmoset call prediction.
+    Each item in this dataset is a dict of:
+
+    .. code-block::
+
+        {
+            'utt_id': str
+            'audio_features': (B x NumFrames x NumFeatures) float tensor
+            'audio_features_lens': (B, ) int tensor
+        }
+    """
+
+    def __init__(
+        self,
+        cut_transforms: List[Callable[[CutSet], CutSet]] = None,
+        feature_input_strategy: BatchIO = PrecomputedFeatures(),
+        feature_transforms: Union[Sequence[Callable], Callable] = None,
+    ) -> None:
+        super().__init__()
+
+        self.cut_transforms = ifnone(cut_transforms, [])
+        self.feature_input_strategy = feature_input_strategy
+
+        if feature_transforms is None:
+            feature_transforms = []
+        elif not isinstance(feature_transforms, Sequence):
+            feature_transforms = [feature_transforms]
+
+        assert all(
+            isinstance(transform, Callable) for transform in feature_transforms
+        ), "Feature transforms must be Callable"
+        self.feature_transforms = feature_transforms
+
+    def __getitem__(self, cuts: CutSet) -> Dict[str, torch.Tensor]:
+
+        for transform in self.cut_transforms:
+            cuts = transform(cuts)
+
+        audio_features, audio_features_lens = self.feature_input_strategy(cuts)
+
+        for transform in self.feature_transforms:
+            audio_features = transform(audio_features)
+
+        return {
+            "utt_id": [cut.id for cut in cuts],
+            "audio_features": audio_features,
+            "audio_features_lens": audio_features_lens
+        }

@@ -30,7 +30,6 @@ import argparse
 import copy
 import logging
 import os
-from contextlib import nullcontext
 
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
@@ -512,21 +511,13 @@ def compute_loss(
         if isinstance(model, DDP)
         else next(model.parameters()).device
     )
-    # at entry, TextTokens is (N, P)
-    text_tokens = batch["text_tokens"].to(device)
-    text_tokens_lens = batch["text_tokens_lens"].to(device)
-    print(f"text_tokens: {text_tokens}, {text_tokens.shape}, text_token_lens: {text_tokens_lens}" )
-    assert text_tokens.ndim == 2
 
     audio_features = batch["audio_features"].to(device)
     audio_features_lens = batch["audio_features_lens"].to(device)
-    print(f"audio_tokens shape: {audio_features.shape}, audio_token_lens: {audio_features_lens}" )
     assert audio_features.ndim == 3
 
     with torch.set_grad_enabled(is_training):
         predicts, loss, metrics = model(
-            x=text_tokens,
-            x_lens=text_tokens_lens,
             y=audio_features,
             y_lens=audio_features_lens,
             train_stage=params.train_stage,
@@ -538,7 +529,6 @@ def compute_loss(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         info["frames"] = (audio_features_lens).sum().item()
-        info["utterances"] = text_tokens.size(0)
 
     # Note: We use reduction=sum while computing the loss.
     info["loss"] = loss.detach().cpu().item()
@@ -573,6 +563,7 @@ def compute_validation_loss(
     if loss_value < params.best_valid_loss:
         params.best_valid_epoch = params.cur_epoch
         params.best_valid_loss = loss_value
+        print(f"[Update] Best valid epoch is {params.best_valid_epoch}, best valid loss is {params.best_valid_loss}")
 
     if params.visualize:
         output_dir = Path(
@@ -655,7 +646,7 @@ def train_one_epoch(
         batch_idx += 1
 
         params.batch_idx_train += 1
-        batch_size = len(batch["text"])
+        batch_size = batch["audio_features"].shape[0]
 
         try:
             with torch.cuda.amp.autocast(dtype=dtype, enabled=enabled):
@@ -829,6 +820,7 @@ def train_one_epoch(
     if params.train_loss < params.best_train_loss:
         params.best_train_epoch = params.cur_epoch
         params.best_train_loss = params.train_loss
+        print(f"[Update] Best train epoch is {params.best_train_epoch}, best train loss is {params.best_train_loss}")
 
 
 def filter_short_and_long_utterances(

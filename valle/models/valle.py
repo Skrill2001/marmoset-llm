@@ -31,7 +31,7 @@ from valle.modules.transformer import (
     TransformerEncoderLayer,
 )
 
-from .macros import NUM_AUDIO_TOKENS, NUM_TEXT_TOKENS
+from .macros import NUM_AUDIO_TOKENS, NUM_TEXT_TOKENS, ENCODED_FRAME_RATE
 from .visualizer import visualize
 
 
@@ -68,7 +68,7 @@ class VALLF(nn.Module):
         share_embedding: bool = True,
         nar_scale_factor: float = 1.0,
         prepend_bos: bool = False,
-        num_quantizers: int = 8,
+        num_quantizers: int = 9,
     ):
         """
         Args:
@@ -320,9 +320,7 @@ class VALLF(nn.Module):
                     yield pair
 
     def pad_y_eos(self, y, y_mask_int, eos_id):
-        targets = F.pad(y, (0, 1), value=0) + eos_id * F.pad(
-            y_mask_int, (0, 1), value=1
-        )
+        targets = F.pad(y, (0, 1), value=0) + eos_id * F.pad(y_mask_int, (0, 1), value=1)
         # inputs, targets
         if self.ar_audio_prepend_bos:
             return (
@@ -340,6 +338,7 @@ class VALLF(nn.Module):
             # no prefix
             prefix_len = 0
             y_emb = self.nar_audio_embeddings[0](y)
+            # 计算了到nar_stage之前的真实的输入embedding，没有acoustic prompt
             for j in range(1, nar_stage):
                 # Formula (4) (5)
                 y_emb = y_emb + self.nar_audio_embeddings[j](codes[..., j])
@@ -351,6 +350,8 @@ class VALLF(nn.Module):
 
             y_prompts = self.nar_audio_embeddings[0](y[:, :prefix_len])
             y_emb = self.nar_audio_embeddings[0](y[:, prefix_len:])
+            # 选了最开始的一段作为prompt，后半部分作为要预测的
+            # 对于prompt部分直接计算出9 codebook的真实值，对于后面的部分则只算到nar_stage
             for j in range(1, self.num_quantizers):
                 y_prompts += self.nar_audio_embeddings[j](
                     codes[:, :prefix_len, j]
@@ -359,12 +360,14 @@ class VALLF(nn.Module):
                     y_emb += self.nar_audio_embeddings[j](
                         codes[:, prefix_len:, j]
                     )
+            # 长度上拼接
             y_emb = torch.concat([y_prompts, y_emb], axis=1)
         elif self.prefix_mode in [2, 4]:
             if self.prefix_mode == 2:
                 # random prefix
                 prefix_len = min(225, int(0.25 * y_lens.min().item()))
 
+                # 从target的音频中随机截一段作为prompt，被截的那一段将变成空的
                 y_prompts_codes = []
                 for b in range(codes.shape[0]):
                     start = self.rng.randint(0, y_lens[b].item() - prefix_len)
@@ -376,6 +379,7 @@ class VALLF(nn.Module):
                     ] = NUM_AUDIO_TOKENS
                 y_prompts_codes = torch.stack(y_prompts_codes, dim=0)
             else:
+                # 需要用PromptedFeatures，相当于是把别的片段拿过来当prompt
                 prefix_len = y_prompts_codes.shape[1]
 
             y_prompts = self.nar_audio_embeddings[0](y_prompts_codes[..., 0])
@@ -1009,6 +1013,7 @@ class VALLE(VALLF):
         x_len = x_lens.max()
         x_attn_mask = torch.zeros((x_len, x_len), dtype=torch.bool)
 
+        # AR 的 循环
         while True:
             y_emb = self.ar_audio_embedding(y)
             y_emb = self.ar_audio_prenet(y_emb)
@@ -1300,3 +1305,403 @@ def topk_sampling(logits, top_k=10, top_p=1.0, temperature=1.0):
     # Sample
     token = torch.multinomial(F.softmax(logits, dim=-1), num_samples=1)
     return token
+
+
+class VALLM(VALLF):
+
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        num_layers: int,
+        norm_first: bool = True,
+        add_prenet: bool = False,
+        prefix_mode: int = 0,
+        share_embedding: bool = True,
+        nar_scale_factor: float = 1.0,
+        **kwargs,
+    ):
+        """
+        Args:
+          d_model:
+            The number of expected features in the input (required).
+          nhead:
+            The number of heads in the multiheadattention models (required).
+          num_layers:
+            The number of sub-decoder-layers in the decoder (required).
+        """
+        super(VALLM, self).__init__(
+            d_model,
+            nhead,
+            num_layers,
+            norm_first=norm_first,
+            add_prenet=add_prenet,
+            decoder_cls=TransformerEncoder,
+            decoder_layer_cls=TransformerEncoderLayer,
+            prefix_mode=prefix_mode,
+            share_embedding=share_embedding,
+            nar_scale_factor=nar_scale_factor,
+            **kwargs,
+        )
+
+    def forward(
+        self,
+        y: Union[torch.Tensor, PromptedFeatures],
+        y_lens: Union[torch.Tensor, PromptedFeatures],
+        reduction: str = "sum",
+        train_stage: int = 0,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Union[torch.Tensor, None]]:
+        """
+        Args:
+          y:
+            A 3-D tensor of shape (N, T, 9).
+          y_lens:
+            A 1-D tensor of shape (N,). It contains the number of tokens in `x`
+            before padding.
+          train_stage:
+            0: AR & NAR modules, 1: AR modules, 2: NAR modules
+        Returns:
+          Return the predicted audio code matrix, cross-entropy loss and Top-10 accuracy.
+        """
+
+        y_prompts_codes = None
+
+        assert y.ndim == 3 and y.shape[2] == 9, y.shape
+        assert y_lens.ndim == 1, y_lens.shape
+
+        y_mask = make_pad_mask(y_lens).to(y.device)
+        y_mask_int = y_mask.type(torch.int64)
+        codes = y.type(torch.int64) * (1 - y_mask_int.unsqueeze(dim=-1))
+
+        y, targets = self.pad_y_eos(codes[..., 0], y_mask_int, eos_id=NUM_AUDIO_TOKENS)
+
+        metrics = {}
+        total_loss = 0.0
+
+        if self.ar_audio_prepend_bos:
+            ar_padding_mask = F.pad(y_mask, (1, 0), value=False)
+        else:
+            ar_padding_mask = y_mask
+        # AR Decoder
+        if train_stage in [0, 1]:
+
+            # y_len 已经考虑了最开始的bos了
+            y_len = y_lens.max() + int(self.ar_audio_prepend_bos)
+
+            y_attn_mask = torch.triu(torch.ones(y_len, y_len, dtype=torch.bool, device=y.device), diagonal=1)
+            attn_mask = y_attn_mask
+
+            # merge key padding and attention masks
+            # 其中padding mask主要用来指示哪些是padding，而attn_mask则主要用来指示哪些是mask的，都是True是
+            bsz, src_len = y.shape[0], y_len
+            padding_mask = (
+                ar_padding_mask.view(bsz, 1, 1, src_len)
+                .expand(-1, self.num_heads, -1, -1)
+                .reshape(bsz * self.num_heads, 1, src_len)
+            )
+            attn_mask = attn_mask.logical_or(padding_mask)
+
+            new_attn_mask = torch.zeros_like(attn_mask, dtype=torch.float32)
+            new_attn_mask.masked_fill_(attn_mask, float("-inf"))
+            attn_mask = new_attn_mask
+
+            y_emb = self.ar_audio_embedding(y)
+            y_emb = self.ar_audio_prenet(y_emb)
+            y_pos = self.ar_audio_position(y_emb)
+
+            pos = y_pos
+
+            dec, _ = self.ar_decoder(
+                (pos, None),
+                mask=attn_mask,
+                # src_key_padding_mask=xy_padding_mask,
+                # is_causal=True,
+            )
+            # 重新调整成(B, N, T)的shape
+            logits = self.ar_predict_layer(dec).permute(0, 2, 1)
+            # loss
+            total_loss = F.cross_entropy(logits, targets, reduction=reduction)
+
+            metrics["ArTop10Accuracy"] = self.ar_accuracy_metric(
+                logits.detach(), targets
+            ).item() * y_lens.sum().type(torch.float32)
+
+        if self.num_quantizers == 1:
+            return (codes, total_loss, metrics)
+
+        # Non-AR Decoders
+        # 如果prepend bos，需要在NAR之前先扔掉
+        if self.ar_audio_prepend_bos:
+            y = y[:, 1:]
+        if train_stage in [0, 2]:
+            # 只预测n-1个码本
+            num_nar_layers = self.num_quantizers - 1
+            # 随机选择一个码本的stage
+            nar_stage = self.rng.choices(
+                [_k for _k in range(1, self.num_quantizers)],
+                weights=[1.0 / num_nar_layers] * num_nar_layers,
+                k=1,
+            )[0]
+
+            y_emb, prefix_len = self._prepare_prompts(
+                y, y_lens, codes, nar_stage, y_prompts_codes
+            )
+
+            y_len = y_lens.max()
+            # y_len之外的位置都需要打上1024的mask
+            targets = codes[..., nar_stage] + NUM_AUDIO_TOKENS * y_mask_int
+
+            if self.prefix_mode in [2, 4]:
+                # 这两种都是从当前的audio中截取一段当audio_prompt
+                padding_mask = F.pad(y_mask, (y_emb.shape[1] - y_len, 0), value=False)
+            elif self.prefix_mode == 1:
+                # 不需要audio prompt的情况
+                targets = targets[:, prefix_len:]
+                padding_mask = y_mask
+
+            y_pos = self.nar_audio_prenet(y_emb)
+            y_pos = self.nar_audio_position(y_pos)
+
+            pos = y_pos
+            dec, _ = self.nar_decoder(
+                (pos, self.nar_stage_embeddings[nar_stage - 1].weight),
+                src_key_padding_mask=padding_mask,
+                # is_causal=False,
+            )
+            dec = dec[:, prefix_len :]
+
+            if self.prefix_mode == 4:
+                prefix_len = 0  # reset for Top10Accuracy metric
+
+            logits = self.nar_predict_layers[nar_stage - 1](dec).permute(0, 2, 1)
+
+            # loss
+            total_length = (y_lens).sum().type(torch.float32)
+            total_loss += (
+                F.cross_entropy(
+                    logits,
+                    targets,
+                    ignore_index=NUM_AUDIO_TOKENS,
+                    reduction=reduction,
+                )
+                * (total_length / (total_length - prefix_len * y.shape[0]))
+            )
+            metrics["NarTop10Accuracy"] = (
+                self.nar_accuracy_metric(
+                    F.pad(
+                        logits.detach(),
+                        (0, 0, 0, 1, 0, 0),
+                        value=logits.min().cpu().item(),
+                    ),
+                    targets,
+                ).item()
+                * total_length
+            )
+
+        if train_stage == 0:
+            total_loss = total_loss / 2.0
+
+        return (codes, total_loss, metrics)
+
+    def inference(
+        self,
+        y: torch.Tensor,
+        top_k: int = -100,
+        temperature: float = 1.0,
+    ) -> torch.Tensor:
+        """
+        Args:
+          x:
+            A 2-D tensor of shape (1, S).
+          x_lens:
+            A 1-D tensor of shape (1,). It contains the number of tokens in `x`
+            before padding.
+          y:
+            A 3-D tensor of shape (1, T, 8).
+          top_k: (`optional`) int
+            The number of highest probability tokens to keep for top-k-filtering. Default to -100.
+          temperature: (`optional`) float
+            The value used to module the next token probabilities. Must be strictly positive. Default to 1.0.
+        Returns:
+          Return the predicted audio code matrix.
+        """
+
+        assert y.ndim == 3, y.shape
+        assert y.shape[0] == 1, y.shape
+
+        prompts = y
+        prefix_len = y.shape[1]
+
+        # AR Decoder
+        # TODO: Managing decoder steps avoid repetitive computation
+        y = prompts[..., 0]
+        if self.ar_audio_prepend_bos:
+            y = F.pad(y, (1, 0), value=NUM_AUDIO_TOKENS + 1)
+
+        while True:
+            y_emb = self.ar_audio_embedding(y)
+            y_emb = self.ar_audio_prenet(y_emb)
+            y_pos = self.ar_audio_position(y_emb)
+            pos = y_pos
+
+            y_len = y.shape[1]
+
+            y_attn_mask = torch.triu(torch.ones(y_len, y_len, dtype=torch.bool), diagonal=1)
+            attn_mask = y_attn_mask.to(y.device)
+
+            dec, _ = self.ar_decoder(
+                (pos, None),
+                mask=attn_mask,
+            )
+            logits = self.ar_predict_layer(dec[:, -1])
+            samples = topk_sampling(
+                logits, top_k=top_k, top_p=1.0, temperature=temperature
+            )
+
+            if ( # 已经预测出eos 或者 当前是eos 或者 超过最大长度
+                torch.argmax(logits, dim=-1)[0] == NUM_AUDIO_TOKENS
+                or samples[0, 0] == NUM_AUDIO_TOKENS
+                or (y.shape[1] - prompts.shape[1]) > prompts.shape[1] * 16
+            ):
+                if prompts.shape[1] == y.shape[1]:
+                    raise SyntaxError(
+                        "well trained model shouldn't reach here."
+                    )
+
+                print(f"VALL-E EOS [{prompts.shape[1]} -> {y.shape[1]}]")
+                break
+
+            y = torch.concat([y, samples], dim=1)
+
+        codes = [y[:, prefix_len + int(self.ar_audio_prepend_bos) :]]
+        if self.num_quantizers == 1:
+            return torch.stack(codes, dim=-1)
+
+        # Non-AR Decoders
+        y_emb = self.nar_audio_embeddings[0](
+            y[:, int(self.ar_audio_prepend_bos) :]
+        )
+
+        # 不需要audio prompt
+        if self.prefix_mode == 0:
+            # 便历每一个量化器
+            for i, (predict_layer, embedding_layer) in enumerate(
+                zip(
+                    self.nar_predict_layers,
+                    self.nar_audio_embeddings[1:],
+                )
+            ):
+                y_pos = self.nar_audio_prenet(y_emb)
+                y_pos = self.nar_audio_position(y_pos)
+                pos = y_pos
+
+                dec, _ = self.nar_decoder((pos, self.nar_stage_embeddings[i].weight))
+                logits = predict_layer(dec[:, prefix_len :])
+
+                # NAR采样阶段，直接采最大的
+                samples = torch.argmax(logits, dim=-1)
+                codes.append(samples)
+
+                if i < self.num_quantizers - 2:
+                    # 对于prompt部分直接加上真值即可，对于后面生成的要加上预测的
+                    y_emb[:, :prefix_len] += embedding_layer(prompts[..., i + 1])
+                    y_emb[:, prefix_len:] += embedding_layer(samples)
+        else:
+            for j in range(1, self.num_quantizers):
+
+                # 先把prompt从token转embedding
+                y_emb[:, :prefix_len] += self.nar_audio_embeddings[j](prompts[..., j])
+
+            for i, (predict_layer, embedding_layer) in enumerate(
+                zip(
+                    self.nar_predict_layers,
+                    self.nar_audio_embeddings[1:],
+                )
+            ):
+                y_pos = self.nar_audio_prenet(y_emb)
+                y_pos = self.nar_audio_position(y_pos)
+                pos = y_pos
+
+                dec, _ = self.nar_decoder((pos, self.nar_stage_embeddings[i].weight))
+                logits = predict_layer(dec[:, prefix_len :])
+
+                samples = torch.argmax(logits, dim=-1)
+                codes.append(samples)
+
+                if i < self.num_quantizers - 2:
+                    y_emb[:, prefix_len:] += embedding_layer(samples)
+
+        assert len(codes) == self.num_quantizers
+        return torch.stack(codes, dim=-1)
+
+    def continual(
+        self,
+        y: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Args:
+          y:
+            A 3-D tensor of shape (1, T, 8).
+        Returns:
+          Return the predicted audio code matrix.
+        """
+        assert y.ndim == 3, y.shape
+        assert y.shape[0] == 1, y.shape
+        assert self.num_quantizers == 9
+
+        prefix_len = min(int(y.shape[1] * 0.5), int(3 * ENCODED_FRAME_RATE))
+
+        # AR Decoder
+        prompts = y[:, :prefix_len]
+        codes = [y[:, prefix_len:, 0]]
+
+        # Non-AR Decoders
+        y_emb = self.nar_audio_embeddings[0](y[..., 0])
+
+        if self.prefix_mode == 0:
+            for i, (predict_layer, embedding_layer) in enumerate(
+                zip(
+                    self.nar_predict_layers,
+                    self.nar_audio_embeddings[1:],
+                )
+            ):
+                y_pos = self.nar_audio_position(y_emb)
+                y_pos = self.nar_audio_prenet(y_pos)
+                pos = y_pos
+
+                dec, _ = self.nar_decoder((pos, self.nar_stage_embeddings[i].weight))
+                logits = predict_layer(dec[:, prefix_len :])
+
+                samples = torch.argmax(logits, dim=-1)
+                codes.append(samples)
+
+                if i < self.num_quantizers - 2:
+                    y_emb[:, :prefix_len] += embedding_layer(prompts[..., i + 1])
+                    y_emb[:, prefix_len:] += embedding_layer(samples)
+        else:
+            # 有prompt的情况就先把prompt给弄好，变成正常的状态，即9个码本都加上了
+            for j in range(1, self.num_quantizers):
+                y_emb[:, :prefix_len] += self.nar_audio_embeddings[j](prompts[..., j])
+            # 之后对于prompt之后的部分再逐个预测
+            for i, (predict_layer, embedding_layer) in enumerate(
+                zip(
+                    self.nar_predict_layers,
+                    self.nar_audio_embeddings[1:],
+                )
+            ):
+                y_pos = self.nar_audio_prenet(y_emb)
+                y_pos = self.nar_audio_position(y_pos)
+                pos = y_pos
+
+                dec, _ = self.nar_decoder((pos, self.nar_stage_embeddings[i].weight))
+                logits = predict_layer(dec[:, prefix_len :])
+
+                samples = torch.argmax(logits, dim=-1)
+                codes.append(samples)
+
+                if i < self.num_quantizers - 2:
+                    y_emb[:, prefix_len:] += embedding_layer(samples)
+
+        assert len(codes) == self.num_quantizers
+        return torch.stack(codes, dim=-1)

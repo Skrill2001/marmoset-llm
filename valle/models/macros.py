@@ -4,6 +4,7 @@ NUM_TEXT_TOKENS = 512
 # Audio
 NUM_AUDIO_TOKENS = 1024  # EnCodec RVQ bins
 NUM_MEL_BINS = 100  # BigVGAN bigvgan_24khz_100band
+ENCODED_FRAME_RATE = 93.75
 
 
 # Speaker

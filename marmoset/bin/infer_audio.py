@@ -37,13 +37,10 @@ from icefall.utils import AttributeDict, str2bool
 
 from valle.data import (
     DACAudioTokenizer,
-    TextTokenizer,
     tokenize_audio_dac,
-    tokenize_text,
 )
-from valle.data.collation import get_text_token_collater
 from valle.models import get_model
-
+from valle.models.macros import ENCODED_FRAME_RATE
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -97,6 +94,13 @@ def get_args():
         help="Do continual task.",
     )
 
+    parser.add_argument(
+        "--prompt-segment",
+        type=str2bool,
+        default=True,
+        help="Select a segment from the beginning of the audio prompt as the prompt.",
+    )
+
     return parser.parse_args()
 
 
@@ -136,7 +140,19 @@ def main():
         for n, audio_file in enumerate(args.audio_prompts.split("|")):
 
             encoded_frames = tokenize_audio_dac(audio_tokenizer, audio_file)
+            print("encoded_frames shape:", encoded_frames.shape)
+
+            # 截取最开始的 一段 作为prompt
+            if args.prompt_segment:
+                y_len= encoded_frames.shape[2]
+                int_low = int(0.25 * y_len)
+                prefix_len = torch.randint(int_low, int_low * 2, size=()).item()
+                prefix_len = min(prefix_len, int(ENCODED_FRAME_RATE * 3))  # 48000/512 * 3s = 281.25 frames
+                encoded_frames = encoded_frames[:, :, :prefix_len]
+                print(f"Clip a segment of length {prefix_len} as prompt.")
+
             audio_prompts = encoded_frames.transpose(2, 1).to(device)
+            print("audio prompt shape: ", audio_prompts.shape)
 
             if False:
                 samples = audio_tokenizer.decode(encoded_frames)

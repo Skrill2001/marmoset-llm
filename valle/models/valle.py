@@ -320,6 +320,7 @@ class VALLF(nn.Module):
                     yield pair
 
     def pad_y_eos(self, y, y_mask_int, eos_id):
+        # padding 了一个eos
         targets = F.pad(y, (0, 1), value=0) + eos_id * F.pad(y_mask_int, (0, 1), value=1)
         # inputs, targets
         if self.ar_audio_prepend_bos:
@@ -346,7 +347,7 @@ class VALLF(nn.Module):
             # prefix at begining
             int_low = (0.25 * y_lens.min()).type(torch.int64).item()
             prefix_len = torch.randint(int_low, int_low * 2, size=()).item()
-            prefix_len = min(prefix_len, 225)  # 24000/320 * 3s = 225 frames
+            prefix_len = min(prefix_len, int(ENCODED_FRAME_RATE * 3))  # 48000/320 * 3s = 281.25 frames
 
             y_prompts = self.nar_audio_embeddings[0](y[:, :prefix_len])
             y_emb = self.nar_audio_embeddings[0](y[:, prefix_len:])

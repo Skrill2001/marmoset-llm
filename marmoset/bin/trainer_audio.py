@@ -563,7 +563,7 @@ def compute_validation_loss(
     if loss_value < params.best_valid_loss:
         params.best_valid_epoch = params.cur_epoch
         params.best_valid_loss = loss_value
-        print(f"[Update] Best valid epoch is {params.best_valid_epoch}, best valid loss is {params.best_valid_loss}")
+        logging.info(f"[Update] Best valid epoch is {params.best_valid_epoch}, best valid loss is {params.best_valid_loss}")
 
     if params.visualize:
         output_dir = Path(
@@ -820,7 +820,7 @@ def train_one_epoch(
     if params.train_loss < params.best_train_loss:
         params.best_train_epoch = params.cur_epoch
         params.best_train_loss = params.train_loss
-        print(f"[Update] Best train epoch is {params.best_train_epoch}, best train loss is {params.best_train_loss}")
+        logging.info(f"[Update] Best train epoch is {params.best_train_epoch}, best train loss is {params.best_train_loss}")
 
 
 def filter_short_and_long_utterances(

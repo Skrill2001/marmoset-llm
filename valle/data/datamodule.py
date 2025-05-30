@@ -77,6 +77,7 @@ class TtsDataModule:
 
     def __init__(self, args: argparse.Namespace):
         self.args = args
+        print(f"manifest-dir : [{args.manifest_dir}]")
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser):
@@ -90,7 +91,7 @@ class TtsDataModule:
         group.add_argument(
             "--manifest-dir",
             type=Path,
-            default=Path("/cpfs02/user/housiyuan/dataset/monkey/valle_data/tokenized"),
+            default=Path("/cpfs02/user/housiyuan/dataset/monkey/valle_data/tokenized_w_s"),
             help="Path to directory with train/valid/test cuts.",
         )
         group.add_argument(
@@ -224,7 +225,7 @@ class TtsDataModule:
         parser.add_argument(
             "--text-tokens",
             type=str,
-            default="/cpfs02/user/housiyuan/dataset/monkey/valle_data/tokenized/unique_text_tokens.k2symbols",
+            default="/cpfs02/user/housiyuan/dataset/monkey/valle_data/tokenized_w_s/unique_text_tokens.k2symbols",
             help="Path to the unique text tokens file",
         )
 

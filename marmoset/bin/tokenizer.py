@@ -61,13 +61,13 @@ def get_args():
     parser.add_argument(
         "--src-dir",
         type=Path,
-        default=Path("/cpfs02/user/housiyuan/dataset/monkey/valle_data/manifests"),
+        default=Path("/cpfs02/user/housiyuan/dataset/monkey/valle_data/manifests_w_s"),
         help="Path to the manifest files",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("/cpfs02/user/housiyuan/dataset/monkey/valle_data/tokenized"),
+        default=Path("/cpfs02/user/housiyuan/dataset/monkey/valle_data/tokenized_w_s"),
         help="Path to the tokenized files",
     )
     parser.add_argument(

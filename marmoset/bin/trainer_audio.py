@@ -317,7 +317,7 @@ def get_params() -> AttributeDict:
             "best_valid_epoch": -1,
             "batch_idx_train": 0,
             "log_interval": 100,  # 10: debug 100: train
-            "reset_interval": 200,
+            "reset_interval": 10,
             "valid_interval": 10000,
             # parameters for TTS
             "env_info": get_env_info(),
@@ -759,6 +759,7 @@ def train_one_epoch(
                 f"Epoch {params.cur_epoch}, "
                 f"batch {batch_idx}, train_loss[{loss_info}], "
                 f"tot_loss[{tot_loss}], "
+                f"avgEOS: {loss_info['AvgEOSPredicted']}, "
                 f"batch size: {batch_size}, "
                 f"lr: {cur_lr:.2e}"
                 + (
@@ -967,6 +968,7 @@ def run(rank, world_size, args):
         )
     else:
         raise NotImplementedError()
+    logging.info(f"Optimizer name: {params.optimizer_name}, base_lr: {params.base_lr}")
 
     scheduler = get_scheduler(params, optimizer)
     optimizer.zero_grad()

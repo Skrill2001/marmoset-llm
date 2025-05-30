@@ -83,7 +83,7 @@ def get_args():
     parser.add_argument(
         "--temperature",
         type=float,
-        default=1.0,
+        default=1.2,
         help="The temperature of AR Decoder top_k sampling.",
     )
 

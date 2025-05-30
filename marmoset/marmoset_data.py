@@ -101,7 +101,7 @@ def prepare_marmoset(
 if __name__ == "__main__":
 
     prepare_marmoset(
-        corpus_dir = "/cpfs02/user/housiyuan/dataset/monkey/codec_data",  
+        corpus_dir = "/cpfs02/user/housiyuan/dataset/monkey/valle_data/split_data_w_s",  
         dataset_parts = "all",
-        output_dir = "/cpfs02/user/housiyuan/dataset/monkey/valle_data/manifests"
+        output_dir = "/cpfs02/user/housiyuan/dataset/monkey/valle_data/manifests_w_s"
     )

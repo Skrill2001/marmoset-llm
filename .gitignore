@@ -10,5 +10,6 @@ log
 egs/*/data
 egs/libritts/prompts/*.png
 valle/version.py
-infer/
+marmoset/infer
+marmoset/prompts
 ckpt/

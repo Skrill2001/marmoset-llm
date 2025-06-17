@@ -40,7 +40,7 @@ from valle.data import (
     tokenize_audio_dac,
 )
 from valle.models import get_model
-from valle.models.macros import ENCODED_FRAME_RATE
+from valle.models.macros import ENCODED_FRAME_RATE, NUM_LENGTH_TOKENS
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -83,7 +83,7 @@ def get_args():
     parser.add_argument(
         "--temperature",
         type=float,
-        default=1.2,
+        default=0.5,
         help="The temperature of AR Decoder top_k sampling.",
     )
 
@@ -114,9 +114,9 @@ def load_model(checkpoint, device):
     model = get_model(args)
 
     missing_keys, unexpected_keys = model.load_state_dict(
-        checkpoint["model"], strict=False
+        checkpoint["model"], strict=True
     )
-    assert (not missing_keys) or (missing_keys == ["ar_length_embedding.word_embeddings.weight"])
+    assert not missing_keys
     model.to(device)
     model.eval()
 
@@ -145,10 +145,18 @@ def main():
 
             # 截取最开始的 一段 作为prompt
             if args.prompt_segment:
+
                 y_len= encoded_frames.shape[2]
+
+                audio_durations = torch.tensor(y_len / ENCODED_FRAME_RATE).to(device)
+                length_token = torch.clamp((audio_durations * 10).long(), min=0, max=NUM_LENGTH_TOKENS-1)
+                length_token = torch.tensor(86).to(device)
+                print("length token is ", length_token.item())
+
                 int_low = int(0.25 * y_len)
                 prefix_len = torch.randint(int_low, int_low * 2, size=()).item()
                 prefix_len = min(prefix_len, int(ENCODED_FRAME_RATE * 3))  # 48000/512 * 3s = 281.25 frames
+
                 encoded_frames = encoded_frames[:, :, :prefix_len]
                 print(f"Clip a segment of length {prefix_len} as prompt.")
 
@@ -167,6 +175,7 @@ def main():
             else:
                 encoded_frames = model.inference(
                     audio_prompts,
+                    length_token=length_token,
                     top_k=args.top_k,
                     temperature=args.temperature,
                 )

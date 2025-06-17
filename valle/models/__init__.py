@@ -12,7 +12,7 @@ from .macros import (
     ENCODED_FRAME_RATE,
 )
 from .transformer import Transformer
-from .valle import VALLE, VALLF, VALLM
+from .valle import VALLE, VALLF, VALLM, VALLD
 from .visualizer import visualize
 
 
@@ -125,6 +125,19 @@ def get_model(params: AttributeDict) -> nn.Module:
         )
     elif params.model_name.lower() in ["vall-m", "vallm"]:
         model = VALLM(
+            params.decoder_dim,
+            params.nhead,
+            params.num_decoder_layers,
+            norm_first=params.norm_first,
+            add_prenet=params.add_prenet,
+            prefix_mode=params.prefix_mode,
+            share_embedding=params.share_embedding,
+            nar_scale_factor=params.scale_factor,
+            prepend_bos=params.prepend_bos,
+            num_quantizers=params.num_quantizers,
+        )
+    elif params.model_name.lower() in ["vall-d", "valld"]:
+        model = VALLD(
             params.decoder_dim,
             params.nhead,
             params.num_decoder_layers,
